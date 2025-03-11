@@ -17,14 +17,30 @@ if (!fs.existsSync(cacheDir)) {
   fs.mkdirSync(cacheDir, { recursive: true });
 }
 
+// Function to center window on screen
+function centerWindow(window) {
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width, height } = primaryDisplay.workAreaSize;
+  const windowBounds = window.getBounds();
+  
+  const x = Math.floor((width - windowBounds.width) / 2);
+  const y = Math.floor((height - windowBounds.height) / 2);
+  
+  window.setPosition(x, y);
+}
+
 function createWindow() {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width, height } = primaryDisplay.workAreaSize;
 
+  // Calculate initial size (50% of screen width, 40% of screen height)
+  const initialWidth = Math.floor(width * 0.5);
+  const initialHeight = Math.floor(height * 0.4);
+
   mainWindow = new BrowserWindow({
-    width: Math.floor(width * 0.6),
-    height: Math.floor(height * 0.6),
-    backgroundColor: '#33333300',
+    width: initialWidth,
+    height: initialHeight,
+    backgroundColor: '#00000000', // Fully transparent background
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
@@ -39,12 +55,14 @@ function createWindow() {
     skipTaskbar: true,
     // Disable window shadow
     hasShadow: false,
-    // Prevent from showing in screen captures
-    excludedFromShownOnAllWorkspaces: true,
-    // Set window type that most screen capture tools ignore
-    type: 'toolbar',
+    // Make window work in fullscreen mode
+    fullscreenable: true,
+    // Remove window type to make it work in fullscreen
+    type: undefined,
     // Make window ignore mouse events
-    focusable: false
+    focusable: false,
+    // Start at the center of the screen
+    center: true
   });
 
   // Enable remote module for this window
@@ -53,8 +71,16 @@ function createWindow() {
   // Make window permanently unclickable
   mainWindow.setIgnoreMouseEvents(true);
 
+  // Center window explicitly after creation
+  centerWindow(mainWindow);
+
   // Load the HTML file
   mainWindow.loadFile('index.html');
+
+  // Listen to resize events to keep window centered
+  mainWindow.on('resize', () => {
+    centerWindow(mainWindow);
+  });
 
   // Quit app shortcut
   globalShortcut.register('CommandOrControl+W', () => {
@@ -67,20 +93,31 @@ function createWindow() {
       mainWindow.hide();
     } else {
       mainWindow.show();
+      // Re-center when showing
+      centerWindow(mainWindow);
     }
   });
 
-  // Screenshot capture shortcut
+  // Screenshot capture shortcut - CMD+1
   globalShortcut.register('CommandOrControl+1', () => {
     captureScreenshot();
+  });
+  
+  // Clear screen shortcut - CMD+2
+  globalShortcut.register('CommandOrControl+2', () => {
+    mainWindow.webContents.send('clear-screen');
   });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
   
-  // Set opacity level
-  mainWindow.setOpacity(0.8);
+  // Set opacity level - make it slightly less opaque
+  mainWindow.setOpacity(0.7);
+
+  // Stay visible in fullscreen
+  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  mainWindow.setAlwaysOnTop(true, "floating", 1);
 
   // Create or clear the screenshot cache directory
   clearOldCache();
@@ -126,6 +163,8 @@ async function captureScreenshot() {
     // Show the window again if it was visible before
     if (wasVisible) {
       mainWindow.show();
+      // Re-center the window
+      centerWindow(mainWindow);
     }
 
     // Send the screenshot to renderer process for processing
@@ -179,4 +218,13 @@ app.on('activate', () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+});
+
+// Expose the centerWindow function to renderer process
+ipcMain.handle('center-window', () => {
+  if (mainWindow) {
+    centerWindow(mainWindow);
+    return true;
+  }
+  return false;
 });
