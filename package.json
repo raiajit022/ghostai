@@ -1,24 +1,53 @@
 {
   "name": "simple-ghost",
-  "version": "1.0.0",
-  "description": "A ghost mode assistant application",
+  "productName": "SimpleGhost",
+  "version": "2.0.0",
+  "description": "A private desktop assistant for analysing screenshots during practice sessions",
   "main": "main.js",
+  "type": "commonjs",
+  "engines": { "node": ">=22.12.0" },
   "scripts": {
-    "start": "electron .",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node launcher.js",
+    "check": "node --check launcher.js && node --check main.js && node --check preload.js && node --input-type=module --check < renderer.js && node --check prompts.js",
+    "test": "npm run check",
+    "test:python": ".venv/bin/python -m unittest discover -v",
+    "test:all": "npm test && npm run test:python",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
   },
-  "keywords": [
-    "electron",
-    "assistant",
-    "ghost"
-  ],
-  "author": "",
+  "build": {
+    "appId": "com.ajitrai.simpleghost",
+    "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
+    "files": ["main.js", "preload.js", "renderer.js", "index.html", "prompts.js", "package.json", "node_modules/**/*"],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "minimumSystemVersion": "13.0",
+      "target": ["dmg", "zip"]
+    },
+    "dmg": { "sign": false }
+  },
+  "keywords": ["electron", "assistant", "gemini", "screenshot"],
+  "author": "Ajit Rai",
   "license": "ISC",
   "dependencies": {
-    "@electron/remote": "^2.1.0",
-    "@google/generative-ai": "^0.2.1",
-    "dotenv": "^16.3.1",
-    "electron": "^28.1.0",
-    "marked": "^10.0.0"
+    "@google/genai": "2.19.0",
+    "dompurify": "3.4.14",
+    "dotenv": "17.4.2",
+    "marked": "18.0.11"
+  },
+  "devDependencies": {
+    "electron": "44.0.0",
+    "electron-builder": "26.15.3"
   }
 }

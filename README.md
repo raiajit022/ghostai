@@ -1,106 +1,56 @@
-# Interview Assistant
+# SimpleGhost
 
-An AI-powered transparent overlay assistant that helps you answer technical interview questions in real-time using screenshots and Gemini Vision API.
+SimpleGhost is a transparent desktop overlay that analyses a screenshot with the Gemini API and streams a concise answer into the window. It is intended for practice sessions and content you are permitted to capture.
 
-![Interview Assistant](https://github.com/raiajit022/Interview-Assistant/raw/main/screenshot.png)
+## Requirements
 
-## Features
+- Node.js 22.12 or newer
+- macOS 13 or newer, Windows 10+, or a current 64-bit Linux distribution
+- A [Gemini API key](https://ai.google.dev/gemini-api/docs/api-key)
 
-- **Ghost Mode:** Transparent overlay that sits on top of your screen without interrupting your workflow
-- **Screenshot Analysis:** Capture screenshots of technical questions using CMD+1
-- **AI-Powered Answers:** Process screenshots through Gemini Vision API to get instant solutions
-- **Step-by-Step Explanations:** Get concise, interview-friendly explanations for any coding problem
-- **Language Agnostic:** Works with any programming language, including SQL, Python, JavaScript, etc.
-- **Keyboard Shortcuts:**
-  - `CMD+1` (or `CTRL+1` on Windows/Linux): Capture screen and analyze visible content
-  - `CMD+H` (or `CTRL+H` on Windows/Linux): Hide/show the assistant
-  - `CMD+W` (or `CTRL+W` on Windows/Linux): Quit the application
+## Setup
 
-## Installation
-
-### Prerequisites
-- Node.js (v14+)
-- npm (v6+)
-- An API key for Google's Gemini API
-
-### Setup
-
-1. Clone the repository:
-```
-git clone https://github.com/raiajit022/Interview-Assistant.git
-cd Interview-Assistant
-```
-
-2. Install dependencies:
-```
+```bash
 npm install
+cp .env.example .env
 ```
 
-3. Create a `.env` file in the project root and add your Gemini API key:
+Add your key to `.env`, then run `npm start`.
+
+Use the on-screen **Analyse** button or the keyboard shortcut. The on-screen controls remain available if a global shortcut is already used by another application.
+
+On macOS, approve Screen Recording when prompted in **System Settings → Privacy & Security → Screen & System Audio Recording**.
+
+## Shortcuts
+
+- `Command/Ctrl + 1`: capture and analyse the primary display
+- `Command/Ctrl + 2`: clear the answer
+- `Command/Ctrl + Shift + H`: hide or show the overlay
+- `Command/Ctrl + Shift + W`: quit
+
+## Configuration
+
+`GEMINI_MODEL` is optional and defaults to `gemini-3.7-flash`.
+
+```dotenv
+GEMINI_API_KEY=your_api_key
+GEMINI_MODEL=gemini-3.7-flash
 ```
-GEMINI_API_KEY=your_gemini_api_key_here
-```
 
-4. Start the application:
-```
-npm start
-```
-
-## How It Works
-
-1. The application runs as a transparent overlay on your screen (Ghost Mode)
-2. When you encounter a technical question during an interview or practice:
-   - Press `CMD+1` to capture a screenshot
-   - The app temporarily hides itself to avoid capturing its own interface
-   - The screenshot is sent to the Gemini Vision API with carefully crafted prompts
-   - Results appear on the overlay with the direct answer and step-by-step explanation
-3. The app automatically resizes based on the length of the content
-
-## Technical Details
-
-### Core Technologies
-- **Electron:** For creating the cross-platform desktop application
-- **Google Gemini Vision API:** For analyzing screenshots and generating answers
-- **Node.js:** For the backend logic and API communication
-- **Marked:** For rendering Markdown responses
-
-### Architecture
-- **Main Process (`main.js`):** Handles desktop integration, screenshot capture, and keyboard shortcuts
-- **Renderer Process (`index.html`):** Manages the user interface and API interaction
-- **Prompts Engine (`prompts.js`):** Contains carefully crafted prompts to get optimal responses from Gemini
+The API key stays in Electron's main process. Screenshot bytes are sent directly to Gemini and are not written to disk.
 
 ## Development
 
-### Project Structure
-```
-Interview-Assistant/
-├── main.js            # Electron main process
-├── index.html         # UI renderer
-├── prompts.js         # Gemini API prompts
-├── .env               # Environment variables (not in repo)
-├── package.json       # Project dependencies
-└── README.md          # Project documentation
+```bash
+npm run check
+npm test
+npm run test:python
+npm run pack
 ```
 
-### Adding New Features
+The renderer runs with context isolation, sandboxing, and Node integration disabled. `preload.js` exposes only the operations the interface needs.
+Packaged builds also disable Electron's RunAsNode, Node options, and CLI inspector fuses.
 
-To add new features:
+## Packaging
 
-1. Fork the repository
-2. Create a new branch for your feature
-3. Implement and test your changes
-4. Submit a pull request with a detailed description
-
-## Privacy and Security
-
-- Screenshots are cached temporarily (3 hours) and then automatically deleted
-- Your Gemini API key is stored locally in the `.env` file (not committed to the repository)
-- The app does not send any data other than screenshots to the Gemini API
-
-## Credits
-
-Developed by Ajit Rai
-
----
-
-**Note:** This tool is designed for interview practice and learning purposes. Always understand the solutions it provides rather than simply copying them.
+Run `npm run dist`. Unsigned local builds work for development; distribution to other macOS users requires an Apple Developer ID certificate and notarization.

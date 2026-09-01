@@ -1,230 +1,220 @@
-const { app, BrowserWindow, globalShortcut, screen, desktopCapturer, ipcMain } = require('electron');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
-require('dotenv').config();
+const { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, screen } = require('electron');
+const path = require('node:path');
+const { getRandomPrompt } = require('./prompts');
 
-// Initialize remote module
-const remoteMain = require('@electron/remote/main');
-remoteMain.initialize();
+require('dotenv').config({ path: path.join(__dirname, '.env'), quiet: true });
 
-// Global window reference
-let mainWindow;
-const cacheDir = path.join(os.tmpdir(), 'ghost-assistant-cache');
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.7-flash';
+const ANALYSIS_TIMEOUT_MS = 90_000;
+const SHORTCUTS = {
+  analyse: 'CommandOrControl+1',
+  clear: 'CommandOrControl+2',
+  visibility: 'CommandOrControl+Shift+H',
+  quit: 'CommandOrControl+Shift+W'
+};
 
-// Create cache directory if it doesn't exist
-if (!fs.existsSync(cacheDir)) {
-  fs.mkdirSync(cacheDir, { recursive: true });
-}
+let mainWindow = null;
+let aiClient = null;
+let analysisInProgress = false;
+let activeAnalysis = null;
+let nextAnalysisId = 0;
 
-// Function to center window on screen
-function centerWindow(window) {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width, height } = primaryDisplay.workAreaSize;
-  const windowBounds = window.getBounds();
-  
-  const x = Math.floor((width - windowBounds.width) / 2);
-  const y = Math.floor((height - windowBounds.height) / 2);
-  
-  window.setPosition(x, y);
+function centerWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const display = screen.getDisplayMatching(mainWindow.getBounds());
+  const { x, y, width, height } = display.workArea;
+  const bounds = mainWindow.getBounds();
+  mainWindow.setPosition(Math.round(x + (width - bounds.width) / 2), Math.round(y + (height - bounds.height) / 2));
 }
 
 function createWindow() {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width, height } = primaryDisplay.workAreaSize;
-
-  // Calculate initial size (50% of screen width, 40% of screen height)
-  const initialWidth = Math.floor(width * 0.5);
-  const initialHeight = Math.floor(height * 0.4);
-
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
   mainWindow = new BrowserWindow({
-    width: initialWidth,
-    height: initialHeight,
-    backgroundColor: '#00000000', // Fully transparent background
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-    // Make window always on top
-    alwaysOnTop: true,
-    // Make window frameless
+    width: Math.min(Math.round(width * 0.55), 900),
+    height: Math.min(Math.round(height * 0.5), 650),
+    minWidth: 480,
+    minHeight: 280,
+    center: true,
     frame: false,
-    // Make window transparent
     transparent: true,
-    // Make window skip taskbar
-    skipTaskbar: true,
-    // Disable window shadow
-    hasShadow: false,
-    // Make window work in fullscreen mode
+    backgroundColor: '#00000000',
+    alwaysOnTop: true,
     fullscreenable: true,
-    // Remove window type to make it work in fullscreen
-    type: undefined,
-    // Make window ignore mouse events
-    focusable: false,
-    // Start at the center of the screen
-    center: true
-  });
-
-  // Enable remote module for this window
-  remoteMain.enable(mainWindow.webContents);
-
-  // Make window permanently unclickable
-  mainWindow.setIgnoreMouseEvents(true);
-
-  // Center window explicitly after creation
-  centerWindow(mainWindow);
-
-  // Load the HTML file
-  mainWindow.loadFile('index.html');
-
-  // Listen to resize events to keep window centered
-  mainWindow.on('resize', () => {
-    centerWindow(mainWindow);
-  });
-
-  // Quit app shortcut
-  globalShortcut.register('CommandOrControl+W', () => {
-    app.quit();
-  });
-
-  // Toggle visibility
-  globalShortcut.register('CommandOrControl+H', () => {
-    if (mainWindow.isVisible()) {
-      mainWindow.hide();
-    } else {
-      mainWindow.show();
-      // Re-center when showing
-      centerWindow(mainWindow);
+    skipTaskbar: true,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
     }
   });
 
-  // Screenshot capture shortcut - CMD+1
-  globalShortcut.register('CommandOrControl+1', () => {
-    captureScreenshot();
-  });
-  
-  // Clear screen shortcut - CMD+2
-  globalShortcut.register('CommandOrControl+2', () => {
-    mainWindow.webContents.send('clear-screen');
-  });
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-  
-  // Set opacity level - make it slightly less opaque
-  mainWindow.setOpacity(0.7);
-
-  // Stay visible in fullscreen
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  mainWindow.setAlwaysOnTop(true, "floating", 1);
-
-  // Create or clear the screenshot cache directory
-  clearOldCache();
+  mainWindow.setAlwaysOnTop(true, 'floating');
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.loadFile('index.html');
 }
 
-// Function to capture screenshot
-async function captureScreenshot() {
+async function getAiClient() {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY is missing. Add it to a .env file and restart SimpleGhost.');
+  }
+  if (!aiClient) {
+    const { GoogleGenAI } = await import('@google/genai');
+    aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+  return aiClient;
+}
+
+function sendAnalysisEvent(type, detail = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('analysis:event', { type, ...detail });
+}
+
+function cancelAnalysis({ clear = false } = {}) {
+  const analysis = activeAnalysis;
+  activeAnalysis = null;
+  analysisInProgress = false;
+  if (analysis) analysis.controller.abort();
+  if (clear) sendAnalysisEvent('clear', { requestId: analysis?.requestId ?? null });
+}
+
+async function capturePrimaryDisplay() {
+  const display = screen.getPrimaryDisplay();
+  const scaleFactor = display.scaleFactor || 1;
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: {
+      width: Math.round(display.size.width * scaleFactor),
+      height: Math.round(display.size.height * scaleFactor)
+    }
+  });
+  const displayId = String(display.id);
+  const source = sources.find((item) => item.display_id === displayId)
+    || sources.find((item) => item.id.includes(displayId))
+    || sources[0];
+  if (!source || source.thumbnail.isEmpty()) {
+    throw new Error('Screen capture failed. Check the operating system screen-recording permission.');
+  }
+  return source.thumbnail.toPNG();
+}
+
+async function analyseScreen() {
+  if (analysisInProgress) return;
+  analysisInProgress = true;
+  const requestId = ++nextAnalysisId;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error('Analysis timed out after 90 seconds.')), ANALYSIS_TIMEOUT_MS);
+  activeAnalysis = { requestId, controller };
+  sendAnalysisEvent('start', { model: MODEL, requestId });
+  const wasVisible = Boolean(mainWindow?.isVisible());
+
   try {
-    // Hide the app window temporarily to avoid capturing it
-    const wasVisible = mainWindow.isVisible();
     if (wasVisible) {
       mainWindow.hide();
-      // Give time for the window to hide
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
-
-    const primaryDisplay = screen.getPrimaryDisplay();
-    const sources = await desktopCapturer.getSources({ 
-      types: ['screen'],
-      thumbnailSize: {
-        width: primaryDisplay.size.width,
-        height: primaryDisplay.size.height
-      }
-    });
-    
-    const primarySource = sources.find(source => 
-      source.display_id === primaryDisplay.id.toString() || 
-      source.id.includes(primaryDisplay.id.toString()) ||
-      source.name.toLowerCase().includes('entire screen') ||
-      source.name.toLowerCase().includes('screen 1')
-    );
-    
-    if (!primarySource) {
-      throw new Error('Primary display source not found');
-    }
-
-    // Save screenshot to cache
-    const timestamp = new Date().getTime();
-    const screenshotPath = path.join(cacheDir, `screenshot-${timestamp}.png`);
-    const screenshotBuffer = primarySource.thumbnail.toPNG();
-    fs.writeFileSync(screenshotPath, screenshotBuffer);
-
-    // Show the window again if it was visible before
+    const png = await capturePrimaryDisplay();
     if (wasVisible) {
-      mainWindow.show();
-      // Re-center the window
-      centerWindow(mainWindow);
+      mainWindow.showInactive();
+      centerWindow();
     }
 
-    // Send the screenshot to renderer process for processing
-    mainWindow.webContents.send('process-screenshot', screenshotPath);
-    
-  } catch (error) {
-    console.error('Error capturing screenshot:', error);
-    if (mainWindow) {
-      mainWindow.webContents.send('screenshot-error', error.message);
-    }
-  }
-}
-
-// Function to clean up old screenshots (older than 3 hours)
-function clearOldCache() {
-  try {
-    const files = fs.readdirSync(cacheDir);
-    const now = new Date().getTime();
-    const threeHoursInMs = 3 * 60 * 60 * 1000;
-    
-    files.forEach(file => {
-      const filePath = path.join(cacheDir, file);
-      const stats = fs.statSync(filePath);
-      const fileAge = now - stats.mtimeMs;
-      
-      if (fileAge > threeHoursInMs) {
-        fs.unlinkSync(filePath);
+    const client = await getAiClient();
+    const stream = await client.models.generateContentStream({
+      model: MODEL,
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: getRandomPrompt() },
+          { inlineData: { data: png.toString('base64'), mimeType: 'image/png' } }
+        ]
+      }],
+      config: {
+        abortSignal: controller.signal,
+        maxOutputTokens: 4096,
+        thinkingConfig: { thinkingLevel: 'LOW' }
       }
     });
+
+    for await (const chunk of stream) {
+      if (activeAnalysis?.requestId !== requestId) return;
+      if (chunk.text) sendAnalysisEvent('chunk', { text: chunk.text, requestId });
+    }
+    if (activeAnalysis?.requestId === requestId) sendAnalysisEvent('complete', { requestId });
   } catch (error) {
-    console.error('Error clearing cache:', error);
+    if (wasVisible && mainWindow && !mainWindow.isVisible()) mainWindow.showInactive();
+    if (activeAnalysis?.requestId === requestId) {
+      const message = controller.signal.aborted
+        ? controller.signal.reason?.message || 'Analysis was cancelled.'
+        : error?.message || 'Unexpected analysis error.';
+      sendAnalysisEvent('error', { message, requestId });
+    }
+  } finally {
+    clearTimeout(timeout);
+    if (activeAnalysis?.requestId === requestId) {
+      activeAnalysis = null;
+      analysisInProgress = false;
+    }
   }
 }
+
+function registerShortcut(accelerator, handler) {
+  if (!globalShortcut.register(accelerator, handler)) console.warn(`Could not register global shortcut: ${accelerator}`);
+}
+
+function registerShortcuts() {
+  registerShortcut(SHORTCUTS.analyse, analyseScreen);
+  registerShortcut(SHORTCUTS.clear, () => cancelAnalysis({ clear: true }));
+  registerShortcut(SHORTCUTS.visibility, () => {
+    if (!mainWindow) return;
+    if (mainWindow.isVisible()) mainWindow.hide();
+    else {
+      mainWindow.showInactive();
+      centerWindow();
+    }
+  });
+  registerShortcut(SHORTCUTS.quit, () => app.quit());
+}
+
+function isTrustedSender(event) {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents);
+}
+
+ipcMain.handle('window:resize', (event, requested) => {
+  if (!isTrustedSender(event)) return false;
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  const display = screen.getDisplayMatching(mainWindow.getBounds());
+  const width = Math.max(480, Math.min(Number(requested?.width) || 700, Math.round(display.workAreaSize.width * 0.8)));
+  const height = Math.max(280, Math.min(Number(requested?.height) || 420, Math.round(display.workAreaSize.height * 0.8)));
+  mainWindow.setSize(Math.round(width), Math.round(height), true);
+  centerWindow();
+  return true;
+});
+
+ipcMain.handle('app:action', (event, action) => {
+  if (!isTrustedSender(event)) return false;
+  if (action === 'analyse') analyseScreen();
+  else if (action === 'clear') cancelAnalysis({ clear: true });
+  else if (action === 'hide') mainWindow?.hide();
+  else if (action === 'quit') app.quit();
+  else return false;
+  return true;
+});
 
 app.whenReady().then(() => {
   createWindow();
-  
-  // Set up a timer to clear old cache every hour
-  setInterval(clearOldCache, 60 * 60 * 1000);
+  registerShortcuts();
 });
-
-app.on('window-all-closed', () => {
-  app.quit();
-});
-
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
-
+app.on('window-all-closed', () => app.quit());
 app.on('will-quit', () => {
+  cancelAnalysis();
   globalShortcut.unregisterAll();
-});
-
-// Expose the centerWindow function to renderer process
-ipcMain.handle('center-window', () => {
-  if (mainWindow) {
-    centerWindow(mainWindow);
-    return true;
-  }
-  return false;
 });

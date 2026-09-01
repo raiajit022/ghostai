@@ -1,2 +1,19 @@
 .env
+.DS_Store
 node_modules/
+dist/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local workspace and obsolete experimental helpers
+SimpleGhost.code-workspace
+Info.plist
+build/
+api-worker.js
+image-worker.js
+memory-optimizer.js
+process-association.js
+process-manager.js
+stealth-launcher.js
+test_foundry.py
